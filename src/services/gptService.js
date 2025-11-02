@@ -8,7 +8,7 @@ const openai = new OpenAI({
 export const generateScript = async (prompt) => {
   try {
     const completion = await openai.chat.completions.create({
-      model: "gpt-4.1",
+      model: "gpt-4o",
       messages: [{ role: "user", content: prompt }],
     });
     return completion.choices[0].message.content;

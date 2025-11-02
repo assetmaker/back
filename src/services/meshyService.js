@@ -1,24 +1,44 @@
 import fetch from "node-fetch";
 import { config } from "../config/index.js";
 
-export const generateModel = async (prompt, mode = "3d") => {
-  try {
-    const response = await fetch("https://api.meshy.ai/v1/text-to-3d", {
-      method: "POST",
-      headers: {
-        "Authorization": `Bearer ${config.meshyKey}`,
-        "Content-Type": "application/json",
-      },
-      body: JSON.stringify({
-        prompt,
-        mode,
-        output_format: "glb",
-      }),
-    });
+const API_URL = "https://api.meshy.ai/openapi/v2/text-to-3d";
 
-    const data = await response.json();
-    return data;
-  } catch (err) {
-    throw new Error("Meshy API 호출 실패: " + err.message);
-  }
+export const createPreviewTask = async (prompt) => {
+  const response = await fetch(API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.meshyKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      prompt,
+      mode: "preview",
+    }),
+  });
+  return response.json();
+};
+
+export const createRefineTask = async (previewTaskId) => {
+  const response = await fetch(API_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${config.meshyKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      mode: "refine",
+      preview_task_id: previewTaskId,
+    }),
+  });
+  return response.json();
+};
+
+export const getTaskStatus = async (taskId) => {
+  const response = await fetch(`${API_URL}/${taskId}`, {
+    method: "GET",
+    headers: {
+      Authorization: `Bearer ${config.meshyKey}`,
+    },
+  });
+  return response.json();
 };
