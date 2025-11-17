@@ -86,7 +86,7 @@ class ComfyService {
 
   /**
    * ComfyUI 워크플로우 실행
-   * @param {object} workflow  ComfyUI JSON (nodes/links 포함)
+   * @param {object} workflow  API 포맷 JSON
    * @param {object} options   { onProgress?: fn }
    * @returns Promise<outputs> history[prompt_id].outputs
    */
@@ -113,7 +113,7 @@ class ComfyService {
       const timeout = setTimeout(() => {
         this.pending.delete(prompt_id);
         reject(new Error("ComfyUI execution timeout"));
-      }, 60_000); // 필요하면 늘려도 됨
+      }, 60_000);
 
       this.pending.set(prompt_id, { resolve, reject, onProgress, timeout });
     });

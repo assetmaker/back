@@ -10,7 +10,6 @@ const app = express();
 app.use(cors());
 app.use(bodyParser.json());
 
-// 라우트 등록
 app.use("/api/script", scriptRoutes);
 app.use("/api/model", modelRoutes);
 app.use("/api/pixel", pixelRoutes);
