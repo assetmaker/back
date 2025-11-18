@@ -1,14 +1,13 @@
-import express from "express";
+// src/routes/pixelRoutes.js
+import { Router } from "express";
 import {
   handleTxt2Img,
-  handleImg2ImgPixel,
-  handleImg2ImgPose,
+  handleImg2Img,
 } from "../controllers/pixelController.js";
 
-const router = express.Router();
+const router = Router();
 
 router.post("/txt2img", handleTxt2Img);
-router.post("/img2img", handleImg2ImgPixel);
-router.post("/img2img/pose", handleImg2ImgPose);
+router.post("/img2img", handleImg2Img);
 
 export default router;
