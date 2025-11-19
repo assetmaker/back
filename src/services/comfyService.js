@@ -1,4 +1,4 @@
-// src/services/comfyPixelService.js
+// src/services/comfyService.js
 import fs from "fs";
 import path from "path";
 import fetch from "node-fetch";
@@ -10,20 +10,18 @@ import { fileURLToPath } from "url";
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// ComfyUI 서버 설정
 const COMFY_HTTP_URL = process.env.COMFY_HTTP_URL || "http://127.0.0.1:8188";
 const COMFY_WS_URL = process.env.COMFY_WS_URL || "ws://127.0.0.1:8188/ws";
 
-// 워크플로우 로드 유틸
+// 워크플로우 JSON 로더
 const loadWorkflow = (filename) => {
   const filePath = path.join(__dirname, "..", "workflows", filename);
   const raw = fs.readFileSync(filePath, "utf-8");
   return JSON.parse(raw);
 };
 
-// base64 → 파일 업로드 → Comfy에 저장된 파일 이름 리턴
+// base64 → Comfy /upload/image → 파일명 리턴
 const uploadImageToComfy = async (imageBase64) => {
-  // data:image/png;base64,.... 이런 형식도 들어올 수 있으니까 뒤만 사용
   const pureBase64 = imageBase64.includes(",")
     ? imageBase64.split(",").pop()
     : imageBase64;
@@ -48,13 +46,23 @@ const uploadImageToComfy = async (imageBase64) => {
   }
 
   const json = await res.json();
-  // Comfy 기본 응답은 { name: "파일명.png" } 형태
   return json.name || json.filename || json.file || null;
 };
 
-// 공통 실행 로직
-const runWorkflow = async (workflow, clientId) => {
-  // 1) /prompt 호출
+// 공통: SaveImageWebsocket 노드 기준 워크플로우 실행
+const runWorkflow = async (workflow) => {
+  const clientId = uuidv4();
+
+  // 1) SaveImageWebsocket 노드 ID 찾기 (예: "31", "28")
+  const saveNodeEntry = Object.entries(workflow).find(
+    ([_, node]) => node.class_type === "SaveImageWebsocket"
+  );
+  if (!saveNodeEntry) {
+    throw new Error("워크플로우에 SaveImageWebsocket 노드를 찾지 못했습니다.");
+  }
+  const saveNodeId = saveNodeEntry[0]; // 문자열 ID
+
+  // 2) /prompt 큐잉
   const payload = {
     client_id: clientId,
     prompt: workflow,
@@ -71,64 +79,99 @@ const runWorkflow = async (workflow, clientId) => {
     throw new Error(`/prompt 호출 실패: ${msg}`);
   }
 
-  // 2) WebSocket 열어서 진행상황 + 결과 대기
+  const queueJson = await httpRes.json();
+  const promptId = queueJson.prompt_id; // SaveImageWebsocket 예제에서도 사용하던 값
+
+  // 3) WebSocket 연결
   const ws = new WebSocket(`${COMFY_WS_URL}?clientId=${clientId}`);
 
   return new Promise((resolve, reject) => {
     let resolved = false;
+    let currentNode = null;
+    const imageBuffers = [];
 
-    ws.on("message", async (data) => {
+    ws.on("message", async (data, isBinary) => {
       try {
-        const msg = JSON.parse(data.toString());
+        if (isBinary) {
+          // SaveImageWebsocket가 보내는 바이너리 프레임
+          if (currentNode && currentNode.toString() === saveNodeId) {
+            // Python 예제처럼 앞 8바이트는 헤더이므로 건너뜀
+            const buf = Buffer.isBuffer(data)
+              ? data.slice(8)
+              : Buffer.from(data).slice(8);
+            imageBuffers.push(buf);
+          }
+          return;
+        }
 
-        // progress 로그 (원하면 여기서 프론트로 중계 가능)
+        let text;
+        if (typeof data === "string") {
+          text = data;
+        } else if (Buffer.isBuffer(data)) {
+          text = data.toString("utf-8");
+        } else {
+          return;
+        }
+
+        const trimmed = text.trimStart();
+        if (!trimmed.startsWith("{") && !trimmed.startsWith("[")) {
+          return;
+        }
+
+        let msg;
+        try {
+          msg = JSON.parse(trimmed);
+        } catch {
+          // JSON 아니면 무시
+          return;
+        }
+
+        // 진행률 로그
         if (msg.type === "progress" && msg.data) {
           const { value, max } = msg.data;
           const percent = Math.round((value / (max || 1)) * 100);
           console.log(`[Comfy] progress: ${percent}%`);
         }
 
-        // SaveImage 노드가 실행되면 images 정보가 같이 온다.
-        if (msg.type === "executed" && msg.data?.images?.length) {
-          const { images } = msg.data;
-          const { filename, subfolder, type } = images[0];
+        // 현재 실행 중인 노드 추적
+        if (msg.type === "executing" && msg.data) {
+          const { node, prompt_id } = msg.data;
 
-          const viewUrl =
-            `${COMFY_HTTP_URL}/view` +
-            `?filename=${encodeURIComponent(filename)}` +
-            `&subfolder=${encodeURIComponent(subfolder || "")}` +
-            `&type=${encodeURIComponent(type || "output")}`;
-
-          const imgRes = await fetch(viewUrl);
-          if (!imgRes.ok) {
-            throw new Error(`/view 호출 실패`);
+          if (prompt_id && prompt_id !== promptId) {
+            // 다른 요청이면 무시
+            return;
           }
 
-          const buffer = await imgRes.arrayBuffer();
-          const base64 = Buffer.from(buffer).toString("base64");
-          const mimeType = imgRes.headers.get("content-type") || "image/png";
+          if (node === null) {
+            // === 실행 종료 지점 ===
+            if (!resolved) {
+              resolved = true;
+              ws.close();
 
-          if (!resolved) {
-            resolved = true;
-            ws.close();
-            resolve({
-              filename,
-              subfolder,
-              type,
-              mimeType,
-              base64,
-            });
-          }
-        }
+              if (!imageBuffers.length) {
+                reject(
+                  new Error(
+                    "작업은 끝났지만 SaveImageWebsocket에서 받은 이미지가 없습니다."
+                  )
+                );
+              } else {
+                // 일단 첫 번째 이미지만 사용
+                const first = imageBuffers[0];
+                const base64 = first.toString("base64");
+                const mimeType = "image/png"; // SaveImageWebsocket은 기본 PNG 포맷 사용
 
-        // 작업 종료인데 이미지가 안 온 경우
-        if (msg.type === "executing" && msg.data?.node === null) {
-          if (!resolved) {
-            resolved = true;
-            ws.close();
-            reject(
-              new Error("작업은 끝났지만 SaveImage 결과를 찾지 못했습니다.")
-            );
+                resolve({
+                  filename: null, // 디스크에 안 쓰므로 파일명 없음
+                  subfolder: null,
+                  type: "websocket",
+                  mimeType,
+                  base64,
+                });
+              }
+            }
+          } else {
+            // 지금 실행 중인 노드 ID 업데이트
+            currentNode = node;
           }
         }
       } catch (err) {
@@ -160,14 +203,12 @@ const runWorkflow = async (workflow, clientId) => {
 
 // === txt2img: Asset_Maker_txt2img.json 기반 ===
 export const runTxt2Img = async ({ prompt, negativePrompt }) => {
-  const clientId = uuidv4();
   const workflow = loadWorkflow("Asset_Maker_txt2img.json");
 
   // 26: CLIPTextEncode (positive)
   if (workflow["26"]?.inputs) {
     const base = workflow["26"].inputs.text || "";
     if (prompt && prompt.trim().length > 0) {
-      // 기본 스타일 + 유저 프롬프트 합치기
       workflow["26"].inputs.text = `${base}, ${prompt}`;
     } else {
       workflow["26"].inputs.text = base;
@@ -184,35 +225,29 @@ export const runTxt2Img = async ({ prompt, negativePrompt }) => {
     }
   }
 
-  const result = await runWorkflow(workflow, clientId);
-  return result;
+  return await runWorkflow(workflow);
 };
 
 // === img2img: Asset_Maker_img2img.json 기반 ===
-export const runImg2Img = async ({
-  imageBase64,
-  prompt,
-  negativePrompt,
-}) => {
+export const runImg2Img = async ({ imageBase64, prompt, negativePrompt }) => {
   if (!imageBase64) {
     throw new Error("imageBase64가 필요합니다.");
   }
 
-  const clientId = uuidv4();
   const workflow = loadWorkflow("Asset_Maker_img2img.json");
 
-  // 1) 이미지 업로드 → 파일 이름 획득
+  // 1) 이미지 업로드 → 파일명
   const uploadedName = await uploadImageToComfy(imageBase64);
   if (!uploadedName) {
     throw new Error("ComfyUI에 이미지 업로드 실패: 파일 이름을 받지 못함");
   }
 
-  // 11: LoadImage → image 필드에 파일명 세팅
+  // 11: LoadImage → image 필드 세팅
   if (workflow["11"]?.inputs) {
     workflow["11"].inputs.image = uploadedName;
   }
 
-  // 26: CLIPTextEncode (positive, 기본은 "pixelart")
+  // 26: positive
   if (workflow["26"]?.inputs) {
     const base = workflow["26"].inputs.text || "pixelart";
     if (prompt && prompt.trim().length > 0) {
@@ -222,7 +257,7 @@ export const runImg2Img = async ({
     }
   }
 
-  // 27: CLIPTextEncode (negative)
+  // 27: negative
   if (workflow["27"]?.inputs) {
     const baseNeg = workflow["27"].inputs.text || "text, watermark";
     if (negativePrompt && negativePrompt.trim().length > 0) {
@@ -232,6 +267,5 @@ export const runImg2Img = async ({
     }
   }
 
-  const result = await runWorkflow(workflow, clientId);
-  return result;
+  return await runWorkflow(workflow);
 };

@@ -54,19 +54,6 @@
       "title": "VAE 디코드"
     }
   },
-  "9": {
-    "inputs": {
-      "filename_prefix": "ComfyUI",
-      "images": [
-        "20",
-        0
-      ]
-    },
-    "class_type": "SaveImage",
-    "_meta": {
-      "title": "이미지 저장"
-    }
-  },
   "10": {
     "inputs": {
       "lora_name": "pixel-art-xl-v1.1.safetensors",
@@ -195,6 +182,18 @@
     "class_type": "CLIPTextEncode",
     "_meta": {
       "title": "CLIP 텍스트 인코딩 (프롬프트)"
+    }
+  },
+  "28": {
+    "inputs": {
+      "images": [
+        "20",
+        0
+      ]
+    },
+    "class_type": "SaveImageWebsocket",
+    "_meta": {
+      "title": "이미지 웹소켓 전송"
     }
   }
 }
