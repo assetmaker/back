@@ -13,14 +13,12 @@ const __dirname = path.dirname(__filename);
 const COMFY_HTTP_URL = process.env.COMFY_HTTP_URL || "http://127.0.0.1:8188";
 const COMFY_WS_URL = process.env.COMFY_WS_URL || "ws://127.0.0.1:8188/ws";
 
-// 워크플로우 JSON 로더
 const loadWorkflow = (filename) => {
   const filePath = path.join(__dirname, "..", "workflows", filename);
   const raw = fs.readFileSync(filePath, "utf-8");
   return JSON.parse(raw);
 };
 
-// base64 → Comfy /upload/image → 파일명 리턴
 const uploadImageToComfy = async (imageBase64) => {
   const pureBase64 = imageBase64.includes(",")
     ? imageBase64.split(",").pop()
@@ -49,18 +47,16 @@ const uploadImageToComfy = async (imageBase64) => {
   return json.name || json.filename || json.file || null;
 };
 
-// 공통: SaveImageWebsocket 노드 기준 워크플로우 실행
 const runWorkflow = async (workflow) => {
   const clientId = uuidv4();
 
-  // 1) SaveImageWebsocket 노드 ID 찾기 (예: "31", "28")
   const saveNodeEntry = Object.entries(workflow).find(
     ([_, node]) => node.class_type === "SaveImageWebsocket"
   );
   if (!saveNodeEntry) {
     throw new Error("워크플로우에 SaveImageWebsocket 노드를 찾지 못했습니다.");
   }
-  const saveNodeId = saveNodeEntry[0]; // 문자열 ID
+  const saveNodeId = saveNodeEntry[0];
 
   // 2) /prompt 큐잉
   const payload = {
@@ -80,7 +76,7 @@ const runWorkflow = async (workflow) => {
   }
 
   const queueJson = await httpRes.json();
-  const promptId = queueJson.prompt_id; // SaveImageWebsocket 예제에서도 사용하던 값
+  const promptId = queueJson.prompt_id;
 
   // 3) WebSocket 연결
   const ws = new WebSocket(`${COMFY_WS_URL}?clientId=${clientId}`);
@@ -93,9 +89,7 @@ const runWorkflow = async (workflow) => {
     ws.on("message", async (data, isBinary) => {
       try {
         if (isBinary) {
-          // SaveImageWebsocket가 보내는 바이너리 프레임
           if (currentNode && currentNode.toString() === saveNodeId) {
-            // Python 예제처럼 앞 8바이트는 헤더이므로 건너뜀
             const buf = Buffer.isBuffer(data)
               ? data.slice(8)
               : Buffer.from(data).slice(8);
@@ -122,7 +116,6 @@ const runWorkflow = async (workflow) => {
         try {
           msg = JSON.parse(trimmed);
         } catch {
-          // JSON 아니면 무시
           return;
         }
 
@@ -133,17 +126,14 @@ const runWorkflow = async (workflow) => {
           console.log(`[Comfy] progress: ${percent}%`);
         }
 
-        // 현재 실행 중인 노드 추적
         if (msg.type === "executing" && msg.data) {
           const { node, prompt_id } = msg.data;
 
           if (prompt_id && prompt_id !== promptId) {
-            // 다른 요청이면 무시
             return;
           }
 
           if (node === null) {
-            // === 실행 종료 지점 ===
             if (!resolved) {
               resolved = true;
               ws.close();
@@ -155,13 +145,12 @@ const runWorkflow = async (workflow) => {
                   )
                 );
               } else {
-                // 일단 첫 번째 이미지만 사용
                 const first = imageBuffers[0];
                 const base64 = first.toString("base64");
-                const mimeType = "image/png"; // SaveImageWebsocket은 기본 PNG 포맷 사용
+                const mimeType = "image/png";
 
                 resolve({
-                  filename: null, // 디스크에 안 쓰므로 파일명 없음
+                  filename: null,
                   subfolder: null,
                   type: "websocket",
                   mimeType,
@@ -170,7 +159,6 @@ const runWorkflow = async (workflow) => {
               }
             }
           } else {
-            // 지금 실행 중인 노드 ID 업데이트
             currentNode = node;
           }
         }
@@ -190,7 +178,6 @@ const runWorkflow = async (workflow) => {
       }
     });
 
-    // 안전 타임아웃
     setTimeout(() => {
       if (!resolved) {
         resolved = true;
@@ -201,7 +188,7 @@ const runWorkflow = async (workflow) => {
   });
 };
 
-// === txt2img: Asset_Maker_txt2img.json 기반 ===
+// txt2img: Asset_Maker_txt2img.json 기반
 export const runTxt2Img = async ({ prompt, negativePrompt }) => {
   const workflow = loadWorkflow("Asset_Maker_txt2img.json");
 
@@ -228,7 +215,7 @@ export const runTxt2Img = async ({ prompt, negativePrompt }) => {
   return await runWorkflow(workflow);
 };
 
-// === img2img: Asset_Maker_img2img.json 기반 ===
+// img2img: Asset_Maker_img2img.json 기반
 export const runImg2Img = async ({ imageBase64, prompt, negativePrompt }) => {
   if (!imageBase64) {
     throw new Error("imageBase64가 필요합니다.");
